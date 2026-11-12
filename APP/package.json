@@ -22,7 +22,8 @@
     "bins": "node scripts/fetch-bins.mjs",
     "dist:mac": "node scripts/fetch-bins.mjs mac && electron-builder --mac --x64 --arm64",
     "dist:win": "node scripts/fetch-bins.mjs win && electron-builder --win --x64",
-    "dist:linux": "node scripts/fetch-bins.mjs linux && electron-builder --linux --x64 --arm64"
+    "dist:linux": "node scripts/fetch-bins.mjs linux && electron-builder --linux --x64 --arm64",
+    "test": "node --test test/*.test.js"
   },
   "devDependencies": {
     "electron": "44.7.1",
@@ -39,6 +40,7 @@
     "files": [
       "main.js",
       "server.js",
+      "security.js",
       "app/**",
       "build/icon.png"
     ],
