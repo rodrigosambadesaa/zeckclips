@@ -112,7 +112,7 @@ button.sec{background:var(--acc2);border-color:var(--acc2);color:#111}
     <div class="grid" style="margin-top:10px">
       <div><label>Clave de API de Anthropic</label><input id="aiKey" type="password" placeholder="sk-ant-…" autocomplete="off"></div>
       <div><label>Estilo de los títulos</label><select id="aiTone"><option value="gancho viral, directo y con curiosidad">Viral / gancho</option><option value="informativo y claro">Informativo</option><option value="divertido y desenfadado">Divertido</option><option value="profesional y serio">Profesional</option></select></div>
-      <div><label><input type="checkbox" id="aiRemember"> Recordar la clave en este navegador</label></div>
+      <div class="mut small">La clave se utiliza solo durante esta sesión; no se almacena en el navegador.</div>
     </div>
     <p class="mut small" style="margin:6px 0 0">Consíguela en console.anthropic.com. Solo se envía la transcripción (texto) a Anthropic, nunca el vídeo. Si Claude falla, la app usa la detección automática local.</p>
   </div>
@@ -519,27 +519,20 @@ function drawFrame(g, v, c, t){
 }
 
 /* ---------- IA de Claude ---------- */
-const KK = 'zeckclips.apikey';
-try { const k = localStorage.getItem(KK); if(k){ $('#aiKey').value = k; $('#aiRemember').checked = true; $('#aiOn').checked = true; } } catch {}
-$('#aiKey').oninput = () => { if($('#aiKey').value) $('#aiOn').checked = true; saveKey(); };
-$('#aiRemember').onchange = saveKey;
-function saveKey(){ try { $('#aiRemember').checked && $('#aiKey').value ? localStorage.setItem(KK, $('#aiKey').value) : localStorage.removeItem(KK); } catch {} }
+// Remove any key left by older releases. Keys are never stored in localStorage.
+try { localStorage.removeItem('zeckclips.apikey'); } catch {}
+$('#aiKey').oninput = () => { if ($('#aiKey').value) $('#aiOn').checked = true; };
 const aiReady = () => $('#aiOn').checked && $('#aiKey').value.trim().startsWith('sk-');
 
-let Anthropic;
-async function askClaude(system, user, schema){
-  Anthropic ??= (await import('https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk@0.133.0/+esm')).default;
-  const client = new Anthropic({ apiKey: $('#aiKey').value.trim(), dangerouslyAllowBrowser: true });
-  const msg = await client.beta.messages.stream({
-    model: 'claude-opus-5-5', max_tokens: 16000,
-    betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default',
-    output_config: { effort: 'medium', format: { type: 'json_schema', schema } },
-    system, messages: [{ role: 'user', content: user }],
-  }).finalMessage();
-  if(msg.stop_reason === 'refusal') throw new Error('Claude rechazó la petición' + (msg.stop_details?.explanation ? ': '+msg.stop_details.explanation : ''));
-  if(msg.stop_reason === 'max_tokens') throw new Error('respuesta demasiado larga');
-  const txt = msg.content.filter(b => b.type === 'text').map(b => b.text).join('');
-  return JSON.parse(txt);
+async function askClaude(system, user, schema) {
+  const response = await apiFetch('/api/claude', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ apiKey: $('#aiKey').value.trim(), system, user, schema }),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || 'No se pudo contactar con Claude');
+  return result.result;
 }
 const META = { title:{type:'string'}, hook:{type:'string'}, description:{type:'string'}, hashtags:{type:'array', items:{type:'string'}} };
 const PLAT = { tiktok:'TikTok', reels:'Instagram Reels', shorts:'YouTube Shorts', all:'TikTok, Reels y YouTube Shorts' };
