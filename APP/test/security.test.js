@@ -87,11 +87,22 @@ test('loopback API and static route reject untrusted browser requests', async t 
   assert.equal((await fetch(base + '/api/download?url=' +
     encodeURIComponent('http://127.0.0.1:80/'), { headers: api })).status, 400);
   assert.equal((await fetch(base + '/..%2f..%2fserver.js')).status, 404);
-  assert.equal((await fetch(base + '/api/unknown', { headers: api })).status, 405);
+  assert.equal((await fetch(base + '/api/claude', {
+    method: 'POST', headers: { ...api, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ apiKey: 'invalid', system: 'test', user: 'test', schema: {} }),
+  })).status, 400);
+  assert.equal((await fetch(base + '/api/claude', {
+    method: 'POST', headers: { ...api, 'Content-Type': 'application/json' },
+    body: 'not json',
+  })).status, 400);
+    assert.equal((await fetch(base + '/api/unknown', { headers: api })).status, 405);
 });
 
 test('untrusted uploaded filenames never flow into innerHTML', () => {
   const html = fs.readFileSync(path.join(__dirname, '..', 'app', 'index.html'), 'utf8');
   assert.match(html, /label\.textContent = f\.name/);
   assert.doesNotMatch(html, /innerHTML\s*=[^\n]*f\.name/);
+  assert.doesNotMatch(html, /dangerouslyAllowBrowser|aiRemember|localStorage\.setItem\([^)]*apikey/);
+  assert.match(html, /localStorage\.removeItem\('zeckclips\.apikey'\)/);
+  assert.match(html, /apiFetch\('\/api\/claude'/);
 });
