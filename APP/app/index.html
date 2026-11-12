@@ -212,6 +212,8 @@ button.sec{background:var(--acc2);border-color:var(--acc2);color:#111}
 
 <script type="module">
 const $ = s => document.querySelector(s);
+// Custom header prevents cross-origin pages from initiating privileged local API requests.
+const apiFetch = (url, options = {}) => fetch(url, { ...options, headers: { ...options.headers, 'X-ZeckClips-Request': '1' } });
 const W = 720, H = 1280;
 const S = { file:null, url:'', dur:0, vw:0, vh:0, words:[], sents:[], energy:null, clips:[], sel:null, playing:false };
 const defStyle = () => ({ sub:'karaoke', font:'Montserrat', size:64, y:70, wpl:3, color:'#ffffff', hi:'#b6ff3b', upper:true, on:true,
@@ -232,7 +234,7 @@ drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); if(e.dat
 $('#file').onchange = e => e.target.files[0] && loadFile(e.target.files[0]);
 
 // desde una URL: primero directo desde el navegador, si no a través del servidor local (server.js)
-fetch('/api/status').then(r=>r.json()).then(s=>{ if(!s.ytdlp) $('#urlHint').innerHTML += '<br>Falta <b>yt-dlp</b> para YouTube, Twitch y otras plataformas: ejecuta <code>npm run bins</code> y reinicia la app.'; })
+apiFetch('/api/status').then(r=>r.json()).then(s=>{ if(!s.ytdlp) $('#urlHint').innerHTML += '<br>Falta <b>yt-dlp</b> para YouTube, Twitch y otras plataformas: ejecuta <code>npm run bins</code> y reinicia la app.'; })
   .catch(()=>{ $('#urlHint').innerHTML += '<br>Para descargar desde enlaces usa la app de escritorio de ZeckClips.'; });
 async function readBody(res, label){
   const total = +res.headers.get('Content-Length') || 0, rd = res.body.getReader(), parts = []; let got = 0;
@@ -252,9 +254,9 @@ async function loadUrl(){
     else {
       $('#urlMsg').textContent = 'Preparando la descarga (YouTube y Twitch pueden tardar un poco)…'; $('#urlBar').style.width = '2%';
       const id = Math.random().toString(36).slice(2);
-      const poll = setInterval(async () => { try { const p = await (await fetch('/api/progress?id='+id)).json();
+      const poll = setInterval(async () => { try { const p = await (await apiFetch('/api/progress?id='+id)).json();
         if(p.msg){ $('#urlMsg').textContent = p.msg; $('#urlBar').style.width = p.pct+'%'; } } catch {} }, 1000);
-      const res = await fetch(`/api/download?id=${id}&url=` + encodeURIComponent(url)).catch(()=>null);
+      const res = await apiFetch(`/api/download?id=${id}&url=` + encodeURIComponent(url)).catch(()=>null);
       clearInterval(poll);
       if(!res) throw new Error('No encuentro el servidor local. Usa la app de escritorio de ZeckClips.');
       if(!res.ok){ let m; try { m = (await res.json()).error; } catch { m = 'HTTP '+res.status; } throw new Error(m); }
@@ -280,8 +282,18 @@ function loadFile(f){
       src.ondurationchange = null; src.currentTime = 0;
     }
     S.dur = src.duration; S.vw = src.videoWidth; S.vh = src.videoHeight;
-    $('#vinfo').innerHTML = `<b>${f.name}</b><br>${fmt(S.dur)} · ${S.vw}×${S.vh} · ${(f.size/1e6).toFixed(0)} MB` +
-      (S.dur > 3600 ? '<br><span style="color:var(--bad)">Vídeo muy largo: el análisis puede tardar y usar mucha memoria.</span>' : '');
+    // File names are untrusted text; never inject them into HTML markup.
+    const info = $('#vinfo');
+    const label = document.createElement('b');
+    label.textContent = f.name;
+    info.replaceChildren(label, document.createElement('br'),
+      document.createTextNode(`${fmt(S.dur)} · ${S.vw}×${S.vh} · ${(f.size/1e6).toFixed(0)} MB`));
+    if (S.dur > 3600) {
+      const warning = document.createElement('span');
+      warning.style.color = 'var(--bad)';
+      warning.textContent = 'Vídeo muy largo: el análisis puede tardar y usar mucha memoria.';
+      info.append(document.createElement('br'), warning);
+    }
     $('#secPrefs').classList.remove('hidden'); step(2);
     $('#secPrefs').scrollIntoView({behavior:'smooth'});
   };
@@ -721,7 +733,7 @@ async function exportClip(c, onp){
 async function toMp4(raw, type){
   $('#expMsg').textContent = 'Convirtiendo a MP4 compatible con TikTok, Reels y Shorts…';
   try {
-    const r = await fetch('/api/mp4?from=' + (type.includes('mp4') ? 'mp4' : 'webm'), { method:'POST', body:raw });
+    const r = await apiFetch('/api/mp4?from=' + (type.includes('mp4') ? 'mp4' : 'webm'), { method:'POST', body:raw });
     if(r.ok) return await r.blob();
     let m; try { m = (await r.json()).error; } catch { m = 'HTTP '+r.status; } throw new Error(m);
   } catch(e){
