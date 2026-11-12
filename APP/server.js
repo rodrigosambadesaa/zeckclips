@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
-const { Readable } = require('stream');
+const { MAX_VIDEO_BYTES, validatePublicUrl, requestPublic, writeLimited, isSupportedVideoSite, denyLocalRequest, denyApiRequest } = require('./security');
 
 const MAX_HEIGHT = 1080;
 const VIDEO_EXT = ['.mp4', '.webm', '.mov', '.m4v', '.mkv'];
@@ -62,43 +62,70 @@ function createServer({ root, binDir, nodeRuntime }) {
     p.on('close', code => resolve({ code, last }));
   });
 
-  async function download(req, res, url, job) {
-    if (!/^https?:\/\//i.test(url)) return json(res, 400, { error: 'La URL debe empezar por http:// o https://' });
+  async function download(req, res, input, job) {
+    let url;
+    try { url = validatePublicUrl(input); }
+    catch (e) { return json(res, 400, { error: e.message }); }
     const tmp = tmpDir();
     try {
-      // 1) enlace directo a un archivo de vídeo
-      let name = decodeURIComponent(path.basename(new URL(url).pathname)) || 'video.mp4';
+      const basename = path.basename(decodeURIComponent(url.pathname)) || 'video.mp4';
+      const name = basename.replace(/[\x00-\x1f\x7f<>:"/\\|?*]/g, '_').slice(0, 120);
+      const ext = path.extname(name).toLowerCase();
       let ctype = '';
-      try { ctype = (await fetch(url, { method: 'HEAD', redirect: 'follow' })).headers.get('content-type') || ''; } catch {}
-      if (ctype.startsWith('video/') || VIDEO_EXT.includes(path.extname(name).toLowerCase())) {
-        const r = await fetch(url, { redirect: 'follow' });
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        const out = path.join(tmp, 'video' + (path.extname(name) || '.mp4'));
-        await new Promise((ok, ko) => Readable.fromWeb(r.body).pipe(fs.createWriteStream(out)).on('finish', ok).on('error', ko));
-        return await sendFile(res, out, ctype.startsWith('video/') ? ctype : 'video/mp4', name);
+      // Some hosts disallow HEAD; direct video URLs can go straight to GET.
+      if (!VIDEO_EXT.includes(ext)) {
+        try {
+          const head = await requestPublic(url.href, 'HEAD');
+          ctype = String(head.headers['content-type'] || '').toLowerCase();
+          head.resume();
+        } catch (e) {
+          // A failed HEAD does not authorize arbitrary URLs for yt-dlp.
+          if (!isSupportedVideoSite(url)) throw e;
+        }
       }
-      // 2) plataformas (YouTube, Twitch, TikTok…) con yt-dlp
+      if (ctype.startsWith('video/') || VIDEO_EXT.includes(ext)) {
+        const response = await requestPublic(url.href);
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          response.resume();
+          throw new Error('HTTP ' + response.statusCode);
+        }
+        const type = String(response.headers['content-type'] || ctype).split(';')[0].toLowerCase();
+        const out = path.join(tmp, 'video' + (VIDEO_EXT.includes(ext) ? ext : '.mp4'));
+        await writeLimited(response, out);
+        return await sendFile(res, out, type.startsWith('video/') ? type : 'video/mp4', name);
+      }
+      // Restrict subprocess extractors to known video platforms.
+      if (!isSupportedVideoSite(url)) {
+        throw new Error('Para enlaces que no sean archivos de vídeo directos, solo se admiten plataformas conocidas (YouTube, Twitch, TikTok, etc.)');
+      }
       const y = ytdlp();
-      if (!y) throw new Error('Falta yt-dlp para descargar de YouTube, Twitch, TikTok… Los enlaces directos a .mp4 funcionan sin él.');
+      if (!y) throw new Error('Falta yt-dlp para descargar de plataformas de vídeo');
       const fmt = find('ffmpeg')
         ? `bv*[height<=${MAX_HEIGHT}][ext=mp4]+ba[ext=m4a]/b[height<=${MAX_HEIGHT}][ext=mp4]/bv*[height<=${MAX_HEIGHT}]+ba/b`
-        : `b[height<=${MAX_HEIGHT}][ext=mp4]/b`; // sin ffmpeg no se pueden unir vídeo y audio separados
-      PROGRESS.set(job, { pct: 3, msg: 'Analizando el enlace (puede tardar hasta un minuto)…' });
+        : `b[height<=${MAX_HEIGHT}][ext=mp4]/b`;
+      PROGRESS.set(job, { pct: 3, msg: 'Analizando el enlace…' });
       let part = 0;
-      const r = await run(y.exe, [...y.args, '--no-playlist', '--newline', '-f', fmt, '--merge-output-format', 'mp4',
-        '-o', path.join(tmp, '%(title).80s.%(ext)s'), url], { env: y.env }, line => {
+      const result = await run(y.exe, [...y.args, '--no-config', '--no-playlist', '--newline', '-f', fmt,
+        '--merge-output-format', 'mp4', '--max-filesize', String(MAX_VIDEO_BYTES),
+        '-o', path.join(tmp, '%(title).80s.%(ext)s'), url.href], { env: y.env }, line => {
         const m = line.match(/\[download\]\s+([\d.]+)%/);
         if (m) {
           const pct = parseFloat(m[1]);
-          if (pct < 1 && (PROGRESS.get(job)?.pct || 0) > 40) part = 1; // segunda parte (el audio)
+          if (pct < 1 && (PROGRESS.get(job)?.pct || 0) > 40) part = 1;
           PROGRESS.set(job, { pct, msg: `${part ? 'Descargando audio' : 'Descargando vídeo'} ${pct.toFixed(0)}%` });
         } else if (line.includes('[Merger]')) PROGRESS.set(job, { pct: 100, msg: 'Uniendo vídeo y audio…' });
       });
       const file = fs.readdirSync(tmp).find(f => VIDEO_EXT.includes(path.extname(f).toLowerCase()));
-      if (r.code !== 0 || !file) throw new Error('No se pudo descargar: ' + ([...r.last].reverse().find(l => l.includes('ERROR')) || r.last.at(-1) || 'error desconocido'));
-      await sendFile(res, path.join(tmp, file), file.endsWith('.webm') ? 'video/webm' : 'video/mp4', file);
+      if (result.code !== 0 || !file) throw new Error('No se pudo descargar: ' + ([...result.last].reverse().find(l => l.includes('ERROR')) || result.last.at(-1) || 'error desconocido'));
+      const downloaded = path.join(tmp, file);
+      if (fs.statSync(downloaded).size > MAX_VIDEO_BYTES) {
+        const e = new Error('Vídeo demasiado grande (máximo 2 GiB)');
+        e.statusCode = 413;
+        throw e;
+      }
+      await sendFile(res, downloaded, file.endsWith('.webm') ? 'video/webm' : 'video/mp4', file);
     } catch (e) {
-      if (!res.headersSent) json(res, 502, { error: e.message });
+      if (!res.headersSent) json(res, e.statusCode || 502, { error: e.message });
     } finally { rm(tmp); PROGRESS.delete(job); }
   }
 
@@ -109,7 +136,7 @@ function createServer({ root, binDir, nodeRuntime }) {
     const tmp = tmpDir();
     try {
       const inp = path.join(tmp, src === 'mp4' ? 'in.mp4' : 'in.webm'), out = path.join(tmp, 'out.mp4');
-      await new Promise((ok, ko) => req.pipe(fs.createWriteStream(inp)).on('finish', ok).on('error', ko));
+      await writeLimited(req, inp);
       const encode = ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '19', '-pix_fmt', 'yuv420p', '-r', '30', '-c:a', 'aac', '-b:a', '192k', '-ar', '48000'];
       // el MP4 de Chromium ya es H.264: basta con reordenarlo; si falla, se recodifica
       const attempts = [...(src === 'mp4' ? [['-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k']] : []), encode];
@@ -120,21 +147,52 @@ function createServer({ root, binDir, nodeRuntime }) {
       }
       throw new Error('ffmpeg: ' + (r.last.at(-1) || 'error'));
     } catch (e) {
-      if (!res.headersSent) json(res, 500, { error: e.message });
+      if (!res.headersSent) json(res, e.statusCode || 500, { error: e.message });
     } finally { rm(tmp); }
   }
 
+  const baseDir = fs.realpathSync(root);
+  const insideRoot = file => {
+    const rel = path.relative(baseDir, file);
+    return rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel);
+  };
   return http.createServer(async (req, res) => {
-    const u = new URL(req.url, 'http://localhost');
+    const denied = denyLocalRequest(req);
+    if (denied) return json(res, 403, { error: denied });
+    let u;
+    try { u = new URL(req.url, 'http://localhost'); }
+    catch { return json(res, 400, { error: 'URL no válida' }); }
     const q = k => u.searchParams.get(k) || '';
-    if (u.pathname === '/api/status') return json(res, 200, { ytdlp: !!ytdlp(), ffmpeg: !!find('ffmpeg') });
-    if (u.pathname === '/api/progress') return json(res, 200, PROGRESS.get(q('id')) || {});
-    if (u.pathname === '/api/download') return download(req, res, q('url').trim(), q('id'));
-    if (u.pathname === '/api/mp4' && req.method === 'POST') return toMp4(req, res, q('from'));
-    // archivos estáticos de la app
-    const file = path.join(root, path.normalize(decodeURIComponent(u.pathname === '/' ? '/index.html' : u.pathname)));
-    if (!file.startsWith(root) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) { res.writeHead(404); return res.end('No encontrado'); }
-    res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream' });
+    if (u.pathname.startsWith('/api/')) {
+      const apiDenied = denyApiRequest(req);
+      if (apiDenied) return json(res, 403, { error: apiDenied });
+      if (u.pathname === '/api/status' && req.method === 'GET') return json(res, 200, { ytdlp: !!ytdlp(), ffmpeg: !!find('ffmpeg') });
+      if (u.pathname === '/api/progress' && req.method === 'GET') return json(res, 200, PROGRESS.get(q('id')) || {});
+      if (u.pathname === '/api/download' && req.method === 'GET') return download(req, res, q('url').trim(), q('id'));
+      if (u.pathname === '/api/mp4' && req.method === 'POST') {
+        const length = Number(req.headers['content-length'] || 0);
+        if (length > MAX_VIDEO_BYTES) return json(res, 413, { error: 'Vídeo demasiado grande (máximo 2 GiB)' });
+        return toMp4(req, res, q('from'));
+      }
+      return json(res, 405, { error: 'Método o ruta no permitidos' });
+    }
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      res.writeHead(405); return res.end();
+    }
+    let decoded;
+    try { decoded = decodeURIComponent(u.pathname === '/' ? '/index.html' : u.pathname); }
+    catch { return json(res, 400, { error: 'Ruta no válida' }); }
+    const file = path.resolve(baseDir, '.' + (decoded.startsWith('/') ? decoded : '/' + decoded));
+    if (!insideRoot(file) || !fs.existsSync(file) || fs.statSync(file).isDirectory() ||
+      !insideRoot(fs.realpathSync(file))) {
+      res.writeHead(404); return res.end('No encontrado');
+    }
+    res.writeHead(200, {
+      'Content-Type': MIME[path.extname(file)] || 'application/octet-stream',
+      'X-Content-Type-Options': 'nosniff',
+      'Referrer-Policy': 'no-referrer',
+    });
+    if (req.method === 'HEAD') return res.end();
     fs.createReadStream(file).pipe(res);
   });
 }
