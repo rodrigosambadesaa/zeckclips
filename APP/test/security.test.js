@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
+const http = require('node:http');
 const { Readable } = require('node:stream');
 const {
   MAX_VIDEO_BYTES, isPublicAddress, validatePublicUrl, writeLimited,
@@ -73,9 +74,14 @@ test('loopback API and static route reject untrusted browser requests', async t 
   assert.equal((await fetch(base + '/api/status', {
     headers: { ...api, 'Sec-Fetch-Site': 'cross-site' },
   })).status, 403);
-  assert.equal((await fetch(base + '/api/status', {
-    headers: { ...api, Host: 'attacker.example:' + port },
-  })).status, 403);
+  // fetch() normalizes Host; a raw Node HTTP request preserves a spoofed Host header.
+  const badHostStatus = await new Promise((resolve, reject) => {
+    const request = http.get(base + '/api/status', {
+      headers: { ...api, Host: 'attacker.example:' + port },
+    }, response => { response.resume(); resolve(response.statusCode); });
+    request.on('error', reject);
+  });
+  assert.equal(badHostStatus, 403);
   assert.equal((await fetch(base + '/api/download?url=' +
     encodeURIComponent('http://169.254.169.254/latest/meta-data/'), { headers: api })).status, 400);
   assert.equal((await fetch(base + '/api/download?url=' +
