@@ -5,10 +5,11 @@ const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
 const http = require('node:http');
+const dns = require('node:dns');
 const { Readable } = require('node:stream');
 const {
   MAX_VIDEO_BYTES, isPublicAddress, validatePublicUrl, writeLimited,
-  isSupportedVideoSite,
+  isSupportedVideoSite, requestPublic,
 } = require('../security');
 const { createServer, listen } = require('../server');
 
@@ -35,6 +36,17 @@ test('private, special and credentialed URLs are rejected', () => {
   assert.equal(validatePublicUrl('https://www.youtube.com/watch?v=123').hostname, 'www.youtube.com');
   assert.equal(validatePublicUrl('https://1.1.1.1/video.mp4').hostname, '1.1.1.1');
   assert.equal(MAX_VIDEO_BYTES, 2 * 1024 ** 3);
+});
+
+test('DNS answers containing private addresses fail at connection time', async () => {
+  const previous = dns.lookup;
+  dns.lookup = (_host, _options, callback) => callback(null, [
+    { address: '8.8.8.8', family: 4 },
+    { address: '127.0.0.1', family: 4 },
+  ]);
+  try {
+    await assert.rejects(requestPublic('http://video.example.org/demo.mp4'), /no pública/);
+  } finally { dns.lookup = previous; }
 });
 
 test('only exact or real subdomains of supported video hosts are accepted', () => {
