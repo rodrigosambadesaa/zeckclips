@@ -43,7 +43,7 @@ function createServer({ root, binDir, nodeRuntime }) {
     return { exe, args, env };
   }
 
-  const json = (res, code, obj) => { const b = Buffer.from(JSON.stringify(obj)); res.writeHead(code, { 'Content-Type': 'application/json', 'Content-Length': b.length }); res.end(b); };
+  const json = (res, code, obj) => { const b = Buffer.from(JSON.stringify(obj)); res.writeHead(code, { 'Content-Type': 'application/json', 'Content-Length': b.length, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }); res.end(b); };
   const tmpDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'zeckclips-'));
   const rm = d => fs.rm(d, { recursive: true, force: true }, () => {});
   const sendFile = (res, file, type, name) => {
@@ -129,6 +129,61 @@ function createServer({ root, binDir, nodeRuntime }) {
     } finally { rm(tmp); PROGRESS.delete(job); }
   }
 
+  // Never persist API keys, and do not expose the browser to a third-party SDK.
+  async function askClaude(req, res) {
+    try {
+      const limit = 2 * 1024 * 1024;
+      if (Number(req.headers['content-length'] || 0) > limit) {
+        return json(res, 413, { error: 'Transcripción demasiado grande' });
+      }
+      const chunks = [];
+      let size = 0;
+      for await (const chunk of req) {
+        size += chunk.length;
+        if (size > limit) return json(res, 413, { error: 'Transcripción demasiado grande' });
+        chunks.push(chunk);
+      }
+      let body;
+      try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+      catch { return json(res, 400, { error: 'JSON no válido' }); }
+      const { apiKey, system, user, schema } = body || {};
+      if (typeof apiKey !== 'string' || !apiKey.startsWith('sk-') || apiKey.length > 512 ||
+          typeof system !== 'string' || system.length > 20000 ||
+          typeof user !== 'string' || user.length > limit ||
+          !schema || typeof schema !== 'object' || Array.isArray(schema)) {
+        return json(res, 400, { error: 'Datos de IA no válidos' });
+      }
+      const remote = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'claude-opus-5-5',
+          max_tokens: 16000,
+          output_config: { effort: 'medium', format: { type: 'json_schema', schema } },
+          system,
+          messages: [{ role: 'user', content: user }],
+        }),
+        signal: AbortSignal.timeout(180000),
+      });
+      const data = await remote.json();
+      if (!remote.ok) {
+        return json(res, remote.status === 429 ? 429 : 502, {
+          error: 'Anthropic: ' + (data?.error?.message || 'HTTP ' + remote.status),
+        });
+      }
+      if (data.stop_reason === 'refusal') throw new Error('Claude rechazó la petición');
+      if (data.stop_reason === 'max_tokens') throw new Error('Respuesta de Claude demasiado larga');
+      const text = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
+      return json(res, 200, { result: JSON.parse(text) });
+    } catch (e) {
+      if (!res.headersSent) json(res, 502, { error: 'Claude: ' + e.message });
+    }
+  }
+
   // convierte la grabación del navegador en un MP4 estándar (H.264 + AAC, 30 fps, faststart)
   async function toMp4(req, res, src) {
     const ffmpeg = find('ffmpeg');
@@ -169,6 +224,7 @@ function createServer({ root, binDir, nodeRuntime }) {
       if (u.pathname === '/api/status' && req.method === 'GET') return json(res, 200, { ytdlp: !!ytdlp(), ffmpeg: !!find('ffmpeg') });
       if (u.pathname === '/api/progress' && req.method === 'GET') return json(res, 200, PROGRESS.get(q('id')) || {});
       if (u.pathname === '/api/download' && req.method === 'GET') return download(req, res, q('url').trim(), q('id'));
+      if (u.pathname === '/api/claude' && req.method === 'POST') return askClaude(req, res);
       if (u.pathname === '/api/mp4' && req.method === 'POST') {
         const length = Number(req.headers['content-length'] || 0);
         if (length > MAX_VIDEO_BYTES) return json(res, 413, { error: 'Vídeo demasiado grande (máximo 2 GiB)' });
