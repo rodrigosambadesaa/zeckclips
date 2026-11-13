@@ -26,7 +26,7 @@ const FFMPEG_SHA256 = {
     '04e1307997530f9cf2fe35cba2ca7e8875ca91da02f89d6c7243df819c94ad00',
   ],
   'linux-x64': [
-    'bfe8a8fc511530457b528c48d77b504a3797a9bc4866aeca69c2dffa',
+    'bfe8a8fc511530457b528c48d77b5737527b504a3797a9bc4866aeca69c2dffa',
     'e7e7fb30477f717e6f55f9180a70386c62677ef8a4d4d1a5d948f4098aa3eb99',
   ],
   'linux-arm64': [
