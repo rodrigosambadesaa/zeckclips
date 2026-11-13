@@ -102,3 +102,22 @@ test('binary downloader uses a pinned upstream release, not a mutable latest URL
   assert.doesNotMatch(source, /yt-dlp\/releases\/latest/);
   assert.match(source, /ensureVerifiedBinary\(/);
 });
+
+test('every pinned asset hash is a complete SHA-256 digest', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'fetch-bins.mjs'), 'utf8');
+  const ffBlock = source.split('const FFMPEG_SHA256 = {')[1]?.split('};')[0];
+  const ytBlock = source.split('const YTDLP_SHA256 = {')[1]?.split('};')[0];
+  assert.ok(ffBlock && ytBlock);
+  const ffEntries = [...ffBlock.matchAll(/'([a-z0-9-]+)':\s*\[\s*'([a-f\d]+)',\s*'([a-f\d]+)'/g)];
+  const ytEntries = [...ytBlock.matchAll(/'([^']+)':\s*'([a-f\d]+)'/g)];
+  assert.equal(ffEntries.length, 5);
+  assert.equal(ytEntries.length, 4);
+  for (const [, target, compressed, binary] of ffEntries) {
+    assert.match(compressed, /^[a-f\d]{64}$/, `${target} compressed checksum`);
+    assert.match(binary, /^[a-f\d]{64}$/, `${target} executable checksum`);
+  }
+  for (const [, target, digest] of ytEntries) {
+    assert.match(digest, /^[a-f\d]{64}$/, `${target} yt-dlp checksum`);
+  }
+  assert.ok(ffBlock.includes('bfe8a8fc511530457b528c48d77b5737527b504a3797a9bc4866aeca69c2dffa'));
+});
