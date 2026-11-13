@@ -54,14 +54,17 @@ export async function getBounded(input, { maxBytes = DEFAULT_MAX_BYTES, timeoutM
     return await new Promise((resolve, reject) => {
       const parts = [];
       let size = 0;
+      let limitError = null;
       response.on('data', chunk => {
         size += chunk.length;
-        if (size > maxBytes) response.destroy(new Error(`Descarga demasiado grande: ${url}`));
-        else parts.push(chunk);
+        if (size > maxBytes) {
+          limitError = new Error(`Descarga demasiado grande: ${url}`);
+          response.destroy(limitError);
+        } else parts.push(chunk);
       });
       response.on('end', () => resolve(Buffer.concat(parts, size)));
       response.on('error', reject);
-      response.on('aborted', () => reject(new Error('Descarga incompleta')));
+      response.on('aborted', () => reject(limitError || new Error('Descarga incompleta')));
     });
   }
   throw new Error('Demasiadas redirecciones');
