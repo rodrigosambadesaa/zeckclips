@@ -233,7 +233,7 @@ drop.ondragleave = () => drop.classList.remove('over');
 drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); if(e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]); };
 $('#file').onchange = e => e.target.files[0] && loadFile(e.target.files[0]);
 
-// desde una URL: primero directo desde el navegador, si no a través del servidor local (server.js)
+// Import media URLs only through the protected local server (server.js).
 apiFetch('/api/status').then(r=>r.json()).then(s=>{ if(!s.ytdlp) $('#urlHint').innerHTML += '<br>Falta <b>yt-dlp</b> para YouTube, Twitch y otras plataformas: ejecuta <code>npm run bins</code> y reinicia la app.'; })
   .catch(()=>{ $('#urlHint').innerHTML += '<br>Para descargar desde enlaces usa la app de escritorio de ZeckClips.'; });
 async function readBody(res, label){
@@ -248,20 +248,33 @@ async function loadUrl(){
   if(!/^https?:\/\//i.test(url)) return toast('La URL debe empezar por http:// o https://');
   const btn = $('#urlGo'); btn.disabled = true; $('#urlWork').classList.remove('hidden'); $('#urlBar').style.width = '0';
   try{
-    let blob, name = decodeURIComponent(new URL(url).pathname.split('/').pop() || 'video.mp4');
-    const direct = /\.(mp4|webm|mov|m4v)(\?|$)/i.test(url) && await fetch(url).catch(()=>null);
-    if(direct && direct.ok && (direct.headers.get('Content-Type')||'').startsWith('video/')) blob = await readBody(direct, 'Descargando…');
-    else {
-      $('#urlMsg').textContent = 'Preparando la descarga (YouTube y Twitch pueden tardar un poco)…'; $('#urlBar').style.width = '2%';
-      const id = Math.random().toString(36).slice(2);
-      const poll = setInterval(async () => { try { const p = await (await apiFetch('/api/progress?id='+id)).json();
-        if(p.msg){ $('#urlMsg').textContent = p.msg; $('#urlBar').style.width = p.pct+'%'; } } catch {} }, 1000);
-      const res = await apiFetch(`/api/download?id=${id}&url=` + encodeURIComponent(url)).catch(()=>null);
-      clearInterval(poll);
-      if(!res) throw new Error('No encuentro el servidor local. Usa la app de escritorio de ZeckClips.');
-      if(!res.ok){ let m; try { m = (await res.json()).error; } catch { m = 'HTTP '+res.status; } throw new Error(m); }
-      name = decodeURIComponent(res.headers.get('X-Filename') || name);
+    // Always use the protected loopback backend; a direct browser fetch would
+    // bypass its DNS/SSRF controls and could probe private network addresses.
+    let blob, name;
+    try { name = decodeURIComponent(new URL(url).pathname.split('/').pop() || 'video.mp4'); }
+    catch { name = 'video.mp4'; }
+    $('#urlMsg').textContent = 'Preparando la descarga (YouTube y Twitch pueden tardar un poco)…';
+    $('#urlBar').style.width = '2%';
+    const id = Math.random().toString(36).slice(2);
+    const poll = setInterval(async () => {
+      try {
+        const p = await (await apiFetch('/api/progress?id=' + id)).json();
+        if (p.msg) { $('#urlMsg').textContent = p.msg; $('#urlBar').style.width = p.pct + '%'; }
+      } catch {}
+    }, 1000);
+    try {
+      const res = await apiFetch(`/api/download?id=${id}&url=` + encodeURIComponent(url));
+      if (!res.ok) {
+        let message;
+        try { message = (await res.json()).error; }
+        catch { message = 'HTTP ' + res.status; }
+        throw new Error(message || 'Error de descarga');
+      }
+      try { name = decodeURIComponent(res.headers.get('X-Filename') || name); }
+      catch { name = 'video.mp4'; }
       blob = await readBody(res, 'Recibiendo vídeo…');
+    } finally {
+      clearInterval(poll);
     }
     if(!blob.size) throw new Error('el archivo está vacío');
     $('#urlMsg').textContent = `✅ ${name}`;
