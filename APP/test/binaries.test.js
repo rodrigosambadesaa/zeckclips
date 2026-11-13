@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
+const zlib = require('node:zlib');
 
 const binaries = import('../scripts/verified-binaries.mjs');
 
@@ -73,6 +74,14 @@ test('bounded HTTP download rejects oversized headers and chunked responses', as
       res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
       res.write(Buffer.alloc(80));
       res.end(Buffer.alloc(80));
+    } else if (req.url === '/gzip') {
+      const archive = zlib.gzipSync(Buffer.from('hello'));
+      res.writeHead(200, {
+        'Content-Type': 'application/gzip',
+        'Content-Encoding': 'gzip',
+        'Content-Length': archive.length,
+      });
+      res.end(archive);
     } else {
       res.end('small');
     }
@@ -81,6 +90,8 @@ test('bounded HTTP download rejects oversized headers and chunked responses', as
   t.after(() => new Promise(resolve => server.close(resolve)));
   const origin = `http://127.0.0.1:${server.address().port}`;
   assert.deepEqual(await getBounded(origin + '/small', { maxBytes: 10 }), Buffer.from('small'));
+  // Content-Encoding: gzip must not be implicitly decompressed before hashing.
+  assert.deepEqual(await getBounded(origin + '/gzip'), zlib.gzipSync(Buffer.from('hello')));
   await assert.rejects(getBounded(origin + '/length', { maxBytes: 10 }), /demasiado grande/);
   await assert.rejects(getBounded(origin + '/chunked', { maxBytes: 100 }), /demasiado grande/);
 });
