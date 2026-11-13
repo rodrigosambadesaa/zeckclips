@@ -2,7 +2,7 @@ name: Security regression tests
 
 on:
   push:
-    branches: [main, "security/**"]
+    branches: [main, "security/**", "fix/**"]
     paths:
       - "APP/**"
       - ".github/workflows/security-tests.yml"
@@ -32,3 +32,4 @@ jobs:
       - run: node --check server.js
       - run: node --check main.js
       - run: node --check scripts/fetch-bins.mjs
+      - run: node --check scripts/verified-binaries.mjs
