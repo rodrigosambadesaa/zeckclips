@@ -1,6 +1,7 @@
 # Genera los instaladores de ZeckClips para Windows, macOS (Intel y Apple Silicon) y Linux.
 # El proyecto está en APP/. Se ejecuta al subir a main un cambio de "version" en APP/package.json (crea la versión v<versión>),
 # al publicar una etiqueta v* (p. ej. v1.0.0) o a mano desde la pestaña Actions.
+# Las PR prueban la construcción sin publicar releases; solo una etiqueta crea la release.
 name: Instaladores
 
 on:
@@ -8,10 +9,12 @@ on:
     branches: [main]
     paths: [APP/package.json, .github/workflows/build.yml]
     tags: ["v*"]
+  pull_request:
+    paths: ["APP/**", ".github/workflows/build.yml"]
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 defaults:
   run:
@@ -38,6 +41,12 @@ jobs:
           cache: npm
           cache-dependency-path: APP/package-lock.json
       - run: npm ci
+      - run: npm test
+      - run: node --check server.js && node --check main.js && node --check security.js
+        if: runner.os != 'Windows'
+      - run: node --check server.js; node --check main.js; node --check security.js
+        if: runner.os == 'Windows'
+        shell: pwsh
       - run: npm run ${{ matrix.dist }} -- --publish never
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
@@ -53,7 +62,9 @@ jobs:
           if-no-files-found: error
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -66,7 +77,7 @@ jobs:
           merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || steps.v.outputs.tag }}
-          name: ZeckClips ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || steps.v.outputs.tag }}
+          tag_name: ${{ github.ref_name }}
+          name: ZeckClips ${{ github.ref_name }}
           target_commitish: ${{ github.sha }}
           files: ${{ github.workspace }}/out/*
