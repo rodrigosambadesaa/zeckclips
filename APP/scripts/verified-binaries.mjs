@@ -2,6 +2,8 @@
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import path from 'node:path';
+import http from 'node:http';
+import https from 'node:https';
 
 const DEFAULT_MAX_BYTES = 128 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -19,27 +21,50 @@ export function isVerifiedFile(filename, expectedSha256) {
   }
 }
 
-export async function getBounded(url, { maxBytes = DEFAULT_MAX_BYTES, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+// Node's fetch() transparently decompresses Content-Encoding: gzip responses.
+// Release assets may legitimately be gzipped, so read the exact bytes through
+// http/https instead: the pinned SHA-256 must match the published archive bytes.
+export async function getBounded(input, { maxBytes = DEFAULT_MAX_BYTES, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new Error('Invalid maximum download size');
-  const response = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(timeoutMs) });
-  if (!response.ok) {
-    await response.body?.cancel();
-    throw new Error(`HTTP ${response.status} al descargar ${url}`);
+  let url = new URL(input);
+  for (let redirect = 0; redirect <= 5; redirect++) {
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('Invalid download protocol');
+    const response = await new Promise((resolve, reject) => {
+      const transport = url.protocol === 'https:' ? https : http;
+      const request = transport.get(url, { timeout: timeoutMs }, resolve);
+      request.on('timeout', () => request.destroy(new Error('Se agotó el tiempo de descarga')));
+      request.on('error', reject);
+    });
+    if ([301, 302, 303, 307, 308].includes(response.statusCode)) {
+      const destination = response.headers.location;
+      response.resume();
+      if (!destination) throw new Error('Redirección sin destino');
+      url = new URL(destination, url);
+      continue;
+    }
+    if (response.statusCode !== 200) {
+      response.resume();
+      throw new Error(`HTTP ${response.statusCode} al descargar ${url}`);
+    }
+    const declared = Number(response.headers['content-length'] || 0);
+    if (declared > maxBytes) {
+      response.destroy();
+      throw new Error(`Descarga demasiado grande: ${url}`);
+    }
+    return await new Promise((resolve, reject) => {
+      const parts = [];
+      let size = 0;
+      response.on('data', chunk => {
+        size += chunk.length;
+        if (size > maxBytes) response.destroy(new Error(`Descarga demasiado grande: ${url}`));
+        else parts.push(chunk);
+      });
+      response.on('end', () => resolve(Buffer.concat(parts, size)));
+      response.on('error', reject);
+      response.on('aborted', () => reject(new Error('Descarga incompleta')));
+    });
   }
-  const declared = Number(response.headers.get('content-length') || 0);
-  if (declared > maxBytes) {
-    await response.body?.cancel();
-    throw new Error(`Descarga demasiado grande: ${url}`);
-  }
-  if (!response.body) throw new Error('La descarga no devolvió contenido');
-  const parts = [];
-  let size = 0;
-  for await (const chunk of response.body) {
-    size += chunk.byteLength;
-    if (size > maxBytes) throw new Error(`Descarga demasiado grande: ${url}`);
-    parts.push(Buffer.from(chunk));
-  }
-  return Buffer.concat(parts, size);
+  throw new Error('Demasiadas redirecciones');
 }
 
 export async function ensureVerifiedBinary({ filename, url, expectedSha256, archiveSha256, extract, get = getBounded }) {
