@@ -27,15 +27,16 @@ Todo viene incluido (ffmpeg y yt-dlp): no hay que instalar nada más. Los vídeo
 
 ## Generar los instaladores
 
-Los instaladores de cada sistema se generan en ese sistema. La forma más fácil es **GitHub Actions**, que los crea los tres a la vez:
+Los instaladores de cada sistema se generan en ese sistema. **GitHub Actions** compila los tres y ejecuta las pruebas automáticamente para cada PR que modifique la aplicación. Los instaladores de PR se guardan como **Artifacts**, sin publicar ninguna versión.
 
-1. Cambia `"version"` en `package.json` (p. ej. `1.0.2`).
-2. Sube el cambio a la rama `main` (con GitHub Desktop: *Commit* y *Push origin*).
-3. En la pestaña *Actions* se generan los instaladores; al terminar aparecen publicados en *Releases* como versión `v1.0.2`.
+Para publicar una versión de forma intencionada:
 
-También vale crear una etiqueta `v1.0.2` y subirla.
+1. Actualiza `"version"` en `APP/package.json` y en `APP/package-lock.json`.
+2. Integra los cambios en `main` después de superar las pruebas.
+3. Crea y publica una etiqueta con esa versión (por ejemplo, `v1.0.3`).
+4. Solo entonces el flujo *Instaladores* construye y publica los paquetes en **Releases**.
 
-También se puede lanzar a mano desde *Actions → Instaladores → Run workflow* (los archivos quedan en *Artifacts*).
+Los cambios en `main` y la ejecución manual *Actions → Instaladores → Run workflow* generan artefactos, pero **no publican una release** sin una etiqueta.
 
 ### En tu ordenador
 
@@ -49,7 +50,7 @@ npm run dist:win     # instalador .exe (en Windows)
 npm run dist:linux   # .AppImage y .deb (en Linux)
 ```
 
-Los instaladores quedan en `dist/`. `npm run bins` descarga ffmpeg y yt-dlp para tu sistema en `bin/` (se hace solo antes de compilar).
+Los instaladores quedan en `dist/`. `npm run bins` descarga FFmpeg y yt-dlp si faltan o no coinciden con sus hashes SHA-256. Los archivos correctos se reutilizan **sin conexión a Internet**, de modo que `npm start` puede iniciarse sin red cuando ya estén instalados los binarios. La importación de vídeos de Internet, los modelos no descargados y las funciones de Claude siguen requiriendo conexión.
 
 > **Nota:** el empaquetador no admite carpetas con `;` en la ruta (como `DESARROLLOs; JUEGOS-APPs-IA`). Para compilar en local, copia el proyecto a una ruta sin ese carácter o usa `npx electron-builder --mac -c.directories.output=/tmp/zeckclips-dist`.
 
@@ -60,7 +61,7 @@ Los instaladores quedan en `dist/`. `npm run bins` descarga ffmpeg y yt-dlp para
 | `app/index.html` | La interfaz completa: clips, subtítulos, títulos, editor y exportación. |
 | `server.js` | Servidor local: descarga vídeos por URL (yt-dlp) y convierte a MP4 (ffmpeg). También funciona solo con `npm run web` → http://localhost:5178 |
 | `main.js` | App de escritorio (Electron): arranca el servidor y abre la ventana. |
-| `scripts/fetch-bins.mjs` | Descarga ffmpeg y yt-dlp de sus versiones oficiales para cada sistema (yt-dlp con verificación SHA-256). |
+| `scripts/fetch-bins.mjs` y `scripts/verified-binaries.mjs` | Descarga y comprueba versiones fijadas de FFmpeg y yt-dlp, con reutilización de binarios válidos y escritura atómica. |
 | `build/icon.png` | Icono de la app (1024×1024). Sustitúyelo por tu logo y vuelve a compilar. |
 | `.github/workflows/build.yml` | Genera los instaladores de Windows, Mac y Linux en GitHub. |
 
@@ -70,7 +71,7 @@ Los instaladores quedan en `dist/`. `npm run bins` descarga ffmpeg y yt-dlp para
 - Las descargas directas solo admiten URLs HTTP(S) públicas en puertos estándar; se verifican las IP al conectar y las redirecciones. No se admiten direcciones privadas ni servicios internos. `yt-dlp` se limita a plataformas de vídeo conocidas.
 - Las descargas y cargas de vídeo están limitadas a 2 GiB. El límite no garantiza un consumo constante de CPU o RAM durante la conversión.
 - La clave de Anthropic solo se utiliza **durante la sesión**: no se almacena en `localStorage`. Las peticiones se procesan por el backend local y este envía solo el texto a la API de Anthropic. La clave sigue estando temporalmente en memoria cuando se usa.
-- Los ejecutables FFmpeg de la versión `b6.1.1` se verifican usando SHA-256 publicados para las cinco plataformas; `yt-dlp` también se comprueba contra el manifiesto SHA-256 de la publicación.
+- Los ejecutables FFmpeg (`b6.1.1`) y yt-dlp (`2026.10.26`) se comprueban con hashes SHA-256 fijados en el código. Una versión nueva requiere actualizar expresamente la versión y sus hashes, con revisión de seguridad.
 - Ejecuta las pruebas de regresión con `npm test`. GitHub Actions ejecuta pruebas y comprobaciones de sintaxis en los cambios y PR.
 
 **Límites del modelo de amenazas:** las comprobaciones protegen contra solicitudes web no autorizadas y muchos tipos de SSRF, pero no son un sandbox frente a software malicioso que ya se ejecute en el mismo equipo. Las bibliotecas cargadas desde CDN siguen siendo una dependencia de confianza y los instaladores no están firmados digitalmente.
