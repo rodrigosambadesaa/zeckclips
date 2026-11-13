@@ -75,7 +75,7 @@ export async function ensureVerifiedBinary({ filename, url, expectedSha256, arch
   if (isVerifiedFile(filename, expectedSha256)) return 'cached';
   const archive = await get(url);
   if (archiveSha256 && sha256(archive) !== archiveSha256) {
-    throw new Error(`Checksum del archivo comprimido incorrecto: ${url}`);
+    throw new Error(`Checksum del archivo comprimido incorrecto: ${url} (esperado=${archiveSha256}, recibido=${sha256(archive)}, bytes=${archive.length}, prefijo=${archive.subarray(0, 16).toString('hex')})`);
   }
   const binary = extract ? extract(archive) : archive;
   if (sha256(binary) !== expectedSha256) {
