@@ -112,7 +112,7 @@ button.sec{background:var(--acc2);border-color:var(--acc2);color:#111}
     <div class="grid" style="margin-top:10px">
       <div><label>Clave de API de Anthropic</label><input id="aiKey" type="password" placeholder="sk-ant-…" autocomplete="off"></div>
       <div><label>Estilo de los títulos</label><select id="aiTone"><option value="gancho viral, directo y con curiosidad">Viral / gancho</option><option value="informativo y claro">Informativo</option><option value="divertido y desenfadado">Divertido</option><option value="profesional y serio">Profesional</option></select></div>
-      <div><label><input type="checkbox" id="aiRemember"> Recordar la clave en este navegador</label></div>
+      <div class="mut small">La clave se utiliza solo durante esta sesión; no se almacena en el navegador.</div>
     </div>
     <p class="mut small" style="margin:6px 0 0">Consíguela en console.anthropic.com. Solo se envía la transcripción (texto) a Anthropic, nunca el vídeo. Si Claude falla, la app usa la detección automática local.</p>
   </div>
@@ -212,6 +212,8 @@ button.sec{background:var(--acc2);border-color:var(--acc2);color:#111}
 
 <script type="module">
 const $ = s => document.querySelector(s);
+// Custom header prevents cross-origin pages from initiating privileged local API requests.
+const apiFetch = (url, options = {}) => fetch(url, { ...options, headers: { ...options.headers, 'X-ZeckClips-Request': '1' } });
 const W = 720, H = 1280;
 const S = { file:null, url:'', dur:0, vw:0, vh:0, words:[], sents:[], energy:null, clips:[], sel:null, playing:false };
 const defStyle = () => ({ sub:'karaoke', font:'Montserrat', size:64, y:70, wpl:3, color:'#ffffff', hi:'#b6ff3b', upper:true, on:true,
@@ -231,8 +233,8 @@ drop.ondragleave = () => drop.classList.remove('over');
 drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); if(e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]); };
 $('#file').onchange = e => e.target.files[0] && loadFile(e.target.files[0]);
 
-// desde una URL: primero directo desde el navegador, si no a través del servidor local (server.js)
-fetch('/api/status').then(r=>r.json()).then(s=>{ if(!s.ytdlp) $('#urlHint').innerHTML += '<br>Falta <b>yt-dlp</b> para YouTube, Twitch y otras plataformas: ejecuta <code>npm run bins</code> y reinicia la app.'; })
+// Import media URLs only through the protected local server (server.js).
+apiFetch('/api/status').then(r=>r.json()).then(s=>{ if(!s.ytdlp) $('#urlHint').innerHTML += '<br>Falta <b>yt-dlp</b> para YouTube, Twitch y otras plataformas: ejecuta <code>npm run bins</code> y reinicia la app.'; })
   .catch(()=>{ $('#urlHint').innerHTML += '<br>Para descargar desde enlaces usa la app de escritorio de ZeckClips.'; });
 async function readBody(res, label){
   const total = +res.headers.get('Content-Length') || 0, rd = res.body.getReader(), parts = []; let got = 0;
@@ -246,20 +248,33 @@ async function loadUrl(){
   if(!/^https?:\/\//i.test(url)) return toast('La URL debe empezar por http:// o https://');
   const btn = $('#urlGo'); btn.disabled = true; $('#urlWork').classList.remove('hidden'); $('#urlBar').style.width = '0';
   try{
-    let blob, name = decodeURIComponent(new URL(url).pathname.split('/').pop() || 'video.mp4');
-    const direct = /\.(mp4|webm|mov|m4v)(\?|$)/i.test(url) && await fetch(url).catch(()=>null);
-    if(direct && direct.ok && (direct.headers.get('Content-Type')||'').startsWith('video/')) blob = await readBody(direct, 'Descargando…');
-    else {
-      $('#urlMsg').textContent = 'Preparando la descarga (YouTube y Twitch pueden tardar un poco)…'; $('#urlBar').style.width = '2%';
-      const id = Math.random().toString(36).slice(2);
-      const poll = setInterval(async () => { try { const p = await (await fetch('/api/progress?id='+id)).json();
-        if(p.msg){ $('#urlMsg').textContent = p.msg; $('#urlBar').style.width = p.pct+'%'; } } catch {} }, 1000);
-      const res = await fetch(`/api/download?id=${id}&url=` + encodeURIComponent(url)).catch(()=>null);
-      clearInterval(poll);
-      if(!res) throw new Error('No encuentro el servidor local. Usa la app de escritorio de ZeckClips.');
-      if(!res.ok){ let m; try { m = (await res.json()).error; } catch { m = 'HTTP '+res.status; } throw new Error(m); }
-      name = decodeURIComponent(res.headers.get('X-Filename') || name);
+    // Always use the protected loopback backend; a direct browser fetch would
+    // bypass its DNS/SSRF controls and could probe private network addresses.
+    let blob, name;
+    try { name = decodeURIComponent(new URL(url).pathname.split('/').pop() || 'video.mp4'); }
+    catch { name = 'video.mp4'; }
+    $('#urlMsg').textContent = 'Preparando la descarga (YouTube y Twitch pueden tardar un poco)…';
+    $('#urlBar').style.width = '2%';
+    const id = Math.random().toString(36).slice(2);
+    const poll = setInterval(async () => {
+      try {
+        const p = await (await apiFetch('/api/progress?id=' + id)).json();
+        if (p.msg) { $('#urlMsg').textContent = p.msg; $('#urlBar').style.width = p.pct + '%'; }
+      } catch {}
+    }, 1000);
+    try {
+      const res = await apiFetch(`/api/download?id=${id}&url=` + encodeURIComponent(url));
+      if (!res.ok) {
+        let message;
+        try { message = (await res.json()).error; }
+        catch { message = 'HTTP ' + res.status; }
+        throw new Error(message || 'Error de descarga');
+      }
+      try { name = decodeURIComponent(res.headers.get('X-Filename') || name); }
+      catch { name = 'video.mp4'; }
       blob = await readBody(res, 'Recibiendo vídeo…');
+    } finally {
+      clearInterval(poll);
     }
     if(!blob.size) throw new Error('el archivo está vacío');
     $('#urlMsg').textContent = `✅ ${name}`;
@@ -280,8 +295,18 @@ function loadFile(f){
       src.ondurationchange = null; src.currentTime = 0;
     }
     S.dur = src.duration; S.vw = src.videoWidth; S.vh = src.videoHeight;
-    $('#vinfo').innerHTML = `<b>${f.name}</b><br>${fmt(S.dur)} · ${S.vw}×${S.vh} · ${(f.size/1e6).toFixed(0)} MB` +
-      (S.dur > 3600 ? '<br><span style="color:var(--bad)">Vídeo muy largo: el análisis puede tardar y usar mucha memoria.</span>' : '');
+    // File names are untrusted text; never inject them into HTML markup.
+    const info = $('#vinfo');
+    const label = document.createElement('b');
+    label.textContent = f.name;
+    info.replaceChildren(label, document.createElement('br'),
+      document.createTextNode(`${fmt(S.dur)} · ${S.vw}×${S.vh} · ${(f.size/1e6).toFixed(0)} MB`));
+    if (S.dur > 3600) {
+      const warning = document.createElement('span');
+      warning.style.color = 'var(--bad)';
+      warning.textContent = 'Vídeo muy largo: el análisis puede tardar y usar mucha memoria.';
+      info.append(document.createElement('br'), warning);
+    }
     $('#secPrefs').classList.remove('hidden'); step(2);
     $('#secPrefs').scrollIntoView({behavior:'smooth'});
   };
@@ -507,27 +532,20 @@ function drawFrame(g, v, c, t){
 }
 
 /* ---------- IA de Claude ---------- */
-const KK = 'zeckclips.apikey';
-try { const k = localStorage.getItem(KK); if(k){ $('#aiKey').value = k; $('#aiRemember').checked = true; $('#aiOn').checked = true; } } catch {}
-$('#aiKey').oninput = () => { if($('#aiKey').value) $('#aiOn').checked = true; saveKey(); };
-$('#aiRemember').onchange = saveKey;
-function saveKey(){ try { $('#aiRemember').checked && $('#aiKey').value ? localStorage.setItem(KK, $('#aiKey').value) : localStorage.removeItem(KK); } catch {} }
+// Remove any key left by older releases. Keys are never stored in localStorage.
+try { localStorage.removeItem('zeckclips.apikey'); } catch {}
+$('#aiKey').oninput = () => { if ($('#aiKey').value) $('#aiOn').checked = true; };
 const aiReady = () => $('#aiOn').checked && $('#aiKey').value.trim().startsWith('sk-');
 
-let Anthropic;
-async function askClaude(system, user, schema){
-  Anthropic ??= (await import('https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk@0.133.0/+esm')).default;
-  const client = new Anthropic({ apiKey: $('#aiKey').value.trim(), dangerouslyAllowBrowser: true });
-  const msg = await client.beta.messages.stream({
-    model: 'claude-opus-5-5', max_tokens: 16000,
-    betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default',
-    output_config: { effort: 'medium', format: { type: 'json_schema', schema } },
-    system, messages: [{ role: 'user', content: user }],
-  }).finalMessage();
-  if(msg.stop_reason === 'refusal') throw new Error('Claude rechazó la petición' + (msg.stop_details?.explanation ? ': '+msg.stop_details.explanation : ''));
-  if(msg.stop_reason === 'max_tokens') throw new Error('respuesta demasiado larga');
-  const txt = msg.content.filter(b => b.type === 'text').map(b => b.text).join('');
-  return JSON.parse(txt);
+async function askClaude(system, user, schema) {
+  const response = await apiFetch('/api/claude', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ apiKey: $('#aiKey').value.trim(), system, user, schema }),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || 'No se pudo contactar con Claude');
+  return result.result;
 }
 const META = { title:{type:'string'}, hook:{type:'string'}, description:{type:'string'}, hashtags:{type:'array', items:{type:'string'}} };
 const PLAT = { tiktok:'TikTok', reels:'Instagram Reels', shorts:'YouTube Shorts', all:'TikTok, Reels y YouTube Shorts' };
@@ -721,7 +739,7 @@ async function exportClip(c, onp){
 async function toMp4(raw, type){
   $('#expMsg').textContent = 'Convirtiendo a MP4 compatible con TikTok, Reels y Shorts…';
   try {
-    const r = await fetch('/api/mp4?from=' + (type.includes('mp4') ? 'mp4' : 'webm'), { method:'POST', body:raw });
+    const r = await apiFetch('/api/mp4?from=' + (type.includes('mp4') ? 'mp4' : 'webm'), { method:'POST', body:raw });
     if(r.ok) return await r.blob();
     let m; try { m = (await r.json()).error; } catch { m = 'HTTP '+r.status; } throw new Error(m);
   } catch(e){

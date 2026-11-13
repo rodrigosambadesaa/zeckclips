@@ -23,7 +23,18 @@ async function start() {
   win.loadURL(`http://127.0.0.1:${port}/`);
 
   // los enlaces externos se abren en el navegador del sistema
-  win.webContents.setWindowOpenHandler(({ url }) => { shell.openExternal(url); return { action: 'deny' }; });
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    try {
+      const target = new URL(url);
+      if (target.protocol === 'https:' || target.protocol === 'http:') {
+        shell.openExternal(target.href).catch(() => {});
+      }
+    } catch {} // Do not pass arbitrary URI schemes to the OS.
+    return { action: 'deny' };
+  });
+  win.webContents.on('will-navigate', (event, url) => {
+    if (!url.startsWith(`http://127.0.0.1:${port}/`)) event.preventDefault();
+  });
 
   // los MP4 y .srt exportados se guardan directamente en Descargas/ZeckClips
   win.webContents.session.on('will-download', (_e, item) => {

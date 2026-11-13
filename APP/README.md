@@ -64,6 +64,17 @@ Los instaladores quedan en `dist/`. `npm run bins` descarga ffmpeg y yt-dlp para
 | `build/icon.png` | Icono de la app (1024×1024). Sustitúyelo por tu logo y vuelve a compilar. |
 | `.github/workflows/build.yml` | Genera los instaladores de Windows, Mac y Linux en GitHub. |
 
+## Seguridad y privacidad
+
+- El servidor escucha únicamente en `127.0.0.1` y valida Host, Origin, procedencia del navegador y una cabecera personalizada para las rutas API.
+- Las descargas directas solo admiten URLs HTTP(S) públicas en puertos estándar; se verifican las IP al conectar y las redirecciones. No se admiten direcciones privadas ni servicios internos. `yt-dlp` se limita a plataformas de vídeo conocidas.
+- Las descargas y cargas de vídeo están limitadas a 2 GiB. El límite no garantiza un consumo constante de CPU o RAM durante la conversión.
+- La clave de Anthropic solo se utiliza **durante la sesión**: no se almacena en `localStorage`. Las peticiones se procesan por el backend local y este envía solo el texto a la API de Anthropic. La clave sigue estando temporalmente en memoria cuando se usa.
+- Los ejecutables FFmpeg de la versión `b6.1.1` se verifican usando SHA-256 publicados para las cinco plataformas; `yt-dlp` también se comprueba contra el manifiesto SHA-256 de la publicación.
+- Ejecuta las pruebas de regresión con `npm test`. GitHub Actions ejecuta pruebas y comprobaciones de sintaxis en los cambios y PR.
+
+**Límites del modelo de amenazas:** las comprobaciones protegen contra solicitudes web no autorizadas y muchos tipos de SSRF, pero no son un sandbox frente a software malicioso que ya se ejecute en el mismo equipo. Las bibliotecas cargadas desde CDN siguen siendo una dependencia de confianza y los instaladores no están firmados digitalmente.
+
 ## Necesita internet para
 
 - Descargar la IA de subtítulos (Whisper) la primera vez; después queda guardada.
