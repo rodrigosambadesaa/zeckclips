@@ -110,6 +110,14 @@ test('loopback API and static route reject untrusted browser requests', async t 
     assert.equal((await fetch(base + '/api/unknown', { headers: api })).status, 405);
 });
 
+test('video URLs never bypass the backend SSRF checks', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'app', 'index.html'), 'utf8');
+  assert.doesNotMatch(html, /await\s+fetch\(url\)/);
+  assert.doesNotMatch(html, /const\s+direct\s*=/);
+  assert.match(html, /apiFetch\(`\/api\/download\?id=/);
+  assert.match(html, /finally\s*\{\s*clearInterval\(poll\);/);
+});
+
 test('untrusted uploaded filenames never flow into innerHTML', () => {
   const html = fs.readFileSync(path.join(__dirname, '..', 'app', 'index.html'), 'utf8');
   assert.match(html, /label\.textContent = f\.name/);
