@@ -3,12 +3,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
-import crypto from 'node:crypto';
+import { ensureVerifiedBinary, getBounded } from './verified-binaries.mjs';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const FFMPEG = 'https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1';
-const YTDLP = 'https://github.com/yt-dlp/yt-dlp/releases/latest/download';
+const YTDLP = 'https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26';
 
 // SHA-256 of release b6.1.1, from the publisher's GitHub release asset digests.
 // Entries: [compressed .gz, uncompressed executable].
@@ -26,7 +26,7 @@ const FFMPEG_SHA256 = {
     '04e1307997530f9cf2fe35cba2ca7e8875ca91da02f89d6c7243df819c94ad00',
   ],
   'linux-x64': [
-    'bfe8a8fc511530457b528c48d77b504a3797a9bc4866aeca69c2dffa',
+    'bfe8a8fc511530457b528c48d77b5737527b504a3797a9bc4866aeca69c2dffa',
     'e7e7fb30477f717e6f55f9180a70386c62677ef8a4d4d1a5d948f4098aa3eb99',
   ],
   'linux-arm64': [
@@ -34,7 +34,14 @@ const FFMPEG_SHA256 = {
     '6bb182d0d75d23028db82e9e4f723ca69b853d055698486e6984ddb2c06fb8ce',
   ],
 };
-const sha256 = data => crypto.createHash('sha256').update(data).digest('hex');
+// Pinned yt-dlp release 2026.10.26: publisher GitHub asset SHA-256 digests.
+// An explicit update of this table is required to upgrade yt-dlp.
+const YTDLP_SHA256 = {
+  'yt-dlp_macos': '0f922c15ccc0b83eefa1c8bc9104e434318c4bf16e408e1ee93b7745a6efe0aa',
+  'yt-dlp.exe': 'f5389d3698ecde4ef06f4e6b1ce0294fe9ac1396228c8990b8d3416d6d177a7d',
+  'yt-dlp_linux': '767ba9dce7052aa196f8b12652f433d76de128ba168966fa84b6394d5e6c6795',
+  'yt-dlp_linux_aarch64': 'e87e9533e89fe5889abaa21f5114dfe7756d6aa6219b83551add04d48b18e483',
+};
 
 // destino → [nombre de ffmpeg-static, ejecutable de yt-dlp]
 const TARGETS = {
@@ -50,43 +57,39 @@ const want = process.argv[2] || current;
 const list = Object.keys(TARGETS).filter(t => want === 'all' || t === want || t.startsWith(want + '-'));
 if (!list.length) { console.error(`Sistema desconocido: ${want}`); process.exit(1); }
 
-async function get(url) {
-  const r = await fetch(url, { redirect: 'follow' });
-  if (!r.ok) throw new Error(`${r.status} al descargar ${url}`);
-  return Buffer.from(await r.arrayBuffer());
-}
-
-let sums;
-async function ytdlpSum(name) {
-  sums ??= Object.fromEntries((await get(`${YTDLP}/SHA2-256SUMS`)).toString().trim().split('\n').map(l => l.trim().split(/\s+/).reverse()));
-  return sums[name];
-}
-
-for (const t of list) {
-  const [ff, yt] = TARGETS[t], win = t.startsWith('win'), dir = path.join(ROOT, 'bin', t);
+for (const target of list) {
+  const [ff, yt] = TARGETS[target];
+  const win = target.startsWith('win');
+  const dir = path.join(ROOT, 'bin', target);
   fs.mkdirSync(dir, { recursive: true });
-  const ffOut = path.join(dir, win ? 'ffmpeg.exe' : 'ffmpeg'), ytOut = path.join(dir, win ? 'yt-dlp.exe' : 'yt-dlp');
+  const ffOut = path.join(dir, win ? 'ffmpeg.exe' : 'ffmpeg');
+  const ytOut = path.join(dir, win ? 'yt-dlp.exe' : 'yt-dlp');
 
-  const [compressedHash, extractedHash] = FFMPEG_SHA256[t];
-  if (!compressedHash || !extractedHash) throw new Error('Sin hash FFmpeg conocido para ' + t);
-  if (!fs.existsSync(ffOut) || sha256(fs.readFileSync(ffOut)) !== extractedHash) {
-    process.stdout.write(`${t}: ffmpeg… `);
-    const archive = await get(`${FFMPEG}/ffmpeg-${ff}.gz`);
-    if (sha256(archive) !== compressedHash) throw new Error('Checksum FFmpeg .gz incorrecto para ' + t);
-    const executable = zlib.gunzipSync(archive);
-    if (sha256(executable) !== extractedHash) throw new Error('Checksum FFmpeg incorrecto para ' + t);
-    fs.writeFileSync(ffOut, executable, { mode: 0o755 });
-    fs.writeFileSync(path.join(dir, 'ffmpeg-LICENSE.txt'), zlib.gunzipSync(await get(`${FFMPEG}/${ff}.LICENSE.gz`)));
-    console.log('ok (SHA-256 verificado)');
+  const [archiveSha256, executableSha256] = FFMPEG_SHA256[target] || [];
+  if (!archiveSha256 || !executableSha256) throw new Error('Sin hash FFmpeg conocido para ' + target);
+  const ffmpegResult = await ensureVerifiedBinary({
+    filename: ffOut,
+    url: `${FFMPEG}/ffmpeg-${ff}.gz`,
+    expectedSha256: executableSha256,
+    archiveSha256,
+    extract: archive => zlib.gunzipSync(archive, { maxOutputLength: 128 * 1024 * 1024 }),
+  });
+  if (ffmpegResult === 'downloaded') console.log(`${target}: FFmpeg verificado (SHA-256)`);
+
+  // The license is documentation only: keep it beside an already verified executable.
+  const licenseOut = path.join(dir, 'ffmpeg-LICENSE.txt');
+  if (!fs.existsSync(licenseOut)) {
+    const licenseArchive = await getBounded(`${FFMPEG}/${ff}.LICENSE.gz`, { maxBytes: 1024 * 1024 });
+    fs.writeFileSync(licenseOut, zlib.gunzipSync(licenseArchive, { maxOutputLength: 2 * 1024 * 1024 }));
   }
-  const expected = await ytdlpSum(yt);
-  if (!/^[a-f\d]{64}$/i.test(expected || '')) throw new Error('No hay checksum yt-dlp válido para ' + yt);
-  if (!fs.existsSync(ytOut) || sha256(fs.readFileSync(ytOut)) !== expected) {
-    process.stdout.write(`${t}: yt-dlp… `);
-    const bin = await get(`${YTDLP}/${yt}`);
-    if (sha256(bin) !== expected) throw new Error(`La suma SHA-256 de ${yt} no coincide`);
-    fs.writeFileSync(ytOut, bin, { mode: 0o755 });
-    console.log('ok (SHA-256 verificado)');
-  }
+
+  const ytSha = YTDLP_SHA256[yt];
+  if (!ytSha) throw new Error('Sin hash yt-dlp conocido para ' + target);
+  const ytResult = await ensureVerifiedBinary({
+    filename: ytOut,
+    url: `${YTDLP}/${yt}`,
+    expectedSha256: ytSha,
+  });
+  console.log(`${target}: yt-dlp ${ytResult === 'cached' ? 'en caché (SHA-256 válido)' : 'descargado (SHA-256 válido)'}`);
 }
 console.log('Binarios listos en bin/:', list.join(', '));

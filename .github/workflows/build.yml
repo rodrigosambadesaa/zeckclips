@@ -1,6 +1,6 @@
 # Genera los instaladores de ZeckClips para Windows, macOS (Intel y Apple Silicon) y Linux.
-# El proyecto está en APP/. Se ejecuta al subir a main un cambio de "version" en APP/package.json (crea la versión v<versión>),
-# al publicar una etiqueta v* (p. ej. v1.0.0) o a mano desde la pestaña Actions.
+# El proyecto está en APP/. PRs y cambios de versión en main generan artefactos de prueba.
+# Solo una etiqueta v* (p. ej. v1.0.3) publica una release; workflow_dispatch solo genera artefactos.
 name: Instaladores
 
 on:
@@ -8,10 +8,12 @@ on:
     branches: [main]
     paths: [APP/package.json, .github/workflows/build.yml]
     tags: ["v*"]
+  pull_request:
+    paths: ["APP/**", ".github/workflows/build.yml"]
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 defaults:
   run:
@@ -38,6 +40,12 @@ jobs:
           cache: npm
           cache-dependency-path: APP/package-lock.json
       - run: npm ci
+      - run: npm test
+      - run: node --check server.js
+      - run: node --check main.js
+      - run: node --check security.js
+      - run: node --check scripts/fetch-bins.mjs
+      - run: node --check scripts/verified-binaries.mjs
       - run: npm run ${{ matrix.dist }} -- --publish never
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
@@ -53,20 +61,20 @@ jobs:
           if-no-files-found: error
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - id: v
-        run: echo "tag=v$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v4
         with:
           path: ${{ github.workspace }}/out
           merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || steps.v.outputs.tag }}
-          name: ZeckClips ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || steps.v.outputs.tag }}
+          tag_name: ${{ github.ref_name }}
+          name: ZeckClips ${{ github.ref_name }}
           target_commitish: ${{ github.sha }}
           files: ${{ github.workspace }}/out/*
