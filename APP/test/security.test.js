@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const http = require('node:http');
 const dns = require('node:dns');
+const vm = require('node:vm');
 const { Readable } = require('node:stream');
 const {
   MAX_VIDEO_BYTES, isPublicAddress, validatePublicUrl, writeLimited,
@@ -108,6 +109,13 @@ test('loopback API and static route reject untrusted browser requests', async t 
     body: 'not json',
   })).status, 400);
     assert.equal((await fetch(base + '/api/unknown', { headers: api })).status, 405);
+});
+
+test('the inline browser module has valid JavaScript syntax', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'app', 'index.html'), 'utf8');
+  const script = html.match(/<script\s+type="module">([\s\S]*?)<\/script>/i);
+  assert.ok(script, 'missing inline module');
+  assert.doesNotThrow(() => new vm.Script(script[1], { filename: 'index.inline.js' }));
 });
 
 test('video URLs never bypass the backend SSRF checks', () => {
